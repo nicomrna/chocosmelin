@@ -328,7 +328,7 @@
         <span class="check">✓</span>
         <div class="icon">🥤</div>
         <h3>En bolsa</h3>
-        <p>Elegí cuántas unidades querés y mezclá los sabores que más te gusten.</p>
+        <p>Elegí el tamaño de bolsa que más te convenga y mezclá los sabores que quieras.</p>
       </button>
       <button type="button" class="mode-card" id="mode-caja" onclick="selectMode('caja')">
         <span class="check">✓</span>
@@ -342,15 +342,8 @@
   <section class="step" id="paso2" style="display:none;">
     <div class="step-label"><span class="dot">2</span> <span id="paso2-title">Cantidad</span></div>
     <div class="panel" id="panel-bolsa" style="display:none;">
-      <p class="hint">¿Cuántos bombones querés en tu bolsa?</p>
-      <div class="qty-row">
-        <div class="chip-row" id="bolsa-chips"></div>
-        <div class="stepper">
-          <button type="button" onclick="adjustBolsaQty(-1)">−</button>
-          <span class="val" id="bolsa-qty-val">6</span>
-          <button type="button" onclick="adjustBolsaQty(1)">+</button>
-        </div>
-      </div>
+      <p class="hint">Elegí el tamaño de tu bolsa</p>
+      <div class="box-grid" id="bolsa-grid"></div>
     </div>
     <div class="panel" id="panel-caja" style="display:none;">
       <p class="hint">Elegí el tamaño de tu caja</p>
@@ -415,6 +408,7 @@ const CONFIG = {
   sheets: {
     // Pegá acá las URLs "Publicar en la web" en formato CSV de cada hoja
     sabores: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRVOY3vWkpvi_J8gwfJKt0-PlGQp6Yp9otm5nm0QZ1zv_bEAfXLtgA99c24OHDwuuYgOq2HRjakL3Zk/pub?gid=0&single=true&output=csv',
+    bolsas: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRVOY3vWkpvi_J8gwfJKt0-PlGQp6Yp9otm5nm0QZ1zv_bEAfXLtgA99c24OHDwuuYgOq2HRjakL3Zk/pub?gid=412336106&single=true&output=csv',
     cajas: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRVOY3vWkpvi_J8gwfJKt0-PlGQp6Yp9otm5nm0QZ1zv_bEAfXLtgA99c24OHDwuuYgOq2HRjakL3Zk/pub?gid=240522840&single=true&output=csv'
   }
 };
@@ -422,14 +416,14 @@ const CONFIG = {
 /* =========================================================
    Estado
    ========================================================= */
-let sabores = [];   // [{nombre, precio, stock, activo}]
-let cajas = [];      // [{capacidad, precio, stock, activo}]
-let mode = null;      // 'bolsa' | 'caja'
-let bolsaQty = 6;
-let selectedCaja = null; // objeto caja elegida
-let target = 0;        // unidades a completar en el paso actual
-let selection = {};    // { nombreSabor: cantidadElegida }
-let cart = [];          // items agregados al pedido
+let sabores = [];   // [{nombre, stock, descripcion, activo}]
+let bolsas = [];      // [{capacidad, precio, stock, activo}]
+let cajas = [];         // [{capacidad, precio, stock, activo}]
+let mode = null;         // 'bolsa' | 'caja'
+let selectedTier = null; // el tamaño (bolsa o caja) elegido, con su precio fijo
+let target = 0;           // unidades a completar en el paso actual
+let selection = {};       // { nombreSabor: cantidadElegida }
+let cart = [];              // items agregados al pedido
 
 /* =========================================================
    Utilidades CSV
@@ -490,32 +484,37 @@ async function fetchCSV(url){
 /* =========================================================
    Carga inicial de datos
    ========================================================= */
+function parseTierRows(rows){
+  return rows.map(r => ({
+    capacidad: toNumber(r['capacidad']),
+    precio: toNumber(r['precio']),
+    stock: r['stock'] !== undefined && r['stock'] !== '' ? toNumber(r['stock']) : null,
+    activo: isTruthy(r['activo'])
+  })).filter(c => c.capacidad > 0 && c.activo && c.stock !== 0)
+    .sort((a,b) => a.capacidad - b.capacidad);
+}
+
 async function loadData(){
   const statusEl = document.getElementById('flavor-status');
   try{
-    if(CONFIG.sheets.sabores.includes('PEGA_AQUI') || CONFIG.sheets.cajas.includes('PEGA_AQUI')){
+    if(CONFIG.sheets.sabores.includes('PEGA_AQUI') || CONFIG.sheets.bolsas.includes('PEGA_AQUI') || CONFIG.sheets.cajas.includes('PEGA_AQUI')){
       throw new Error('CONFIG_MISSING');
     }
-    const [sabRows, cajRows] = await Promise.all([
+    const [sabRows, bolRows, cajRows] = await Promise.all([
       fetchCSV(CONFIG.sheets.sabores),
+      fetchCSV(CONFIG.sheets.bolsas),
       fetchCSV(CONFIG.sheets.cajas)
     ]);
 
     sabores = sabRows.map(r => ({
       nombre: r['nombre'] || '',
-      precio: toNumber(r['precio']),
       stock: r['stock'] !== undefined && r['stock'] !== '' ? toNumber(r['stock']) : null,
       descripcion: r['descripcion'] || r['descripción'] || '',
       activo: isTruthy(r['activo'])
     })).filter(s => s.nombre && s.activo);
 
-    cajas = cajRows.map(r => ({
-      capacidad: toNumber(r['capacidad']),
-      precio: toNumber(r['precio']),
-      stock: r['stock'] !== undefined && r['stock'] !== '' ? toNumber(r['stock']) : null,
-      activo: isTruthy(r['activo'])
-    })).filter(c => c.capacidad > 0 && c.activo)
-      .sort((a,b) => a.capacidad - b.capacidad);
+    bolsas = parseTierRows(bolRows);
+    cajas = parseTierRows(cajRows);
 
     if(!sabores.length){
       statusEl.textContent = 'Por ahora no hay sabores disponibles. Volvé a intentarlo más tarde 💛';
@@ -523,8 +522,8 @@ async function loadData(){
       return;
     }
     statusEl.style.display = 'none';
-    buildBolsaChips();
-    buildBoxGrid();
+    buildTierGrid('bolsa-grid', bolsas);
+    buildTierGrid('box-grid', cajas);
   } catch(err){
     console.error(err);
     if(err.message === 'CONFIG_MISSING'){
@@ -541,84 +540,48 @@ async function loadData(){
    ========================================================= */
 function selectMode(m){
   mode = m;
+  selectedTier = null;
   document.getElementById('mode-bolsa').classList.toggle('selected', m === 'bolsa');
   document.getElementById('mode-caja').classList.toggle('selected', m === 'caja');
 
   document.getElementById('panel-bolsa').style.display = m === 'bolsa' ? 'block' : 'none';
   document.getElementById('panel-caja').style.display = m === 'caja' ? 'block' : 'none';
-  document.getElementById('paso2-title').textContent = m === 'bolsa' ? 'Cantidad' : 'Tamaño de la caja';
+  document.getElementById('paso2-title').textContent = m === 'bolsa' ? 'Tamaño de la bolsa' : 'Tamaño de la caja';
   document.getElementById('paso2').style.display = 'block';
+  document.getElementById('paso3').style.display = 'none';
 
-  if(m === 'bolsa'){
-    target = bolsaQty;
-    selectedCaja = null;
-    document.querySelectorAll('#box-grid .box-card').forEach(c => c.classList.remove('selected'));
-    resetSelectionAndRender();
-    document.getElementById('paso3').style.display = 'block';
-  } else {
-    document.getElementById('paso3').style.display = cajas.length ? 'block' : 'none';
-    if(!selectedCaja && cajas.length){
-      selectBox(cajas[0]);
-    } else if(selectedCaja){
-      target = selectedCaja.capacidad;
-      resetSelectionAndRender();
-    }
+  const tiers = m === 'bolsa' ? bolsas : cajas;
+  if(tiers.length){
+    selectTier(tiers[0], m === 'bolsa' ? 'bolsa-grid' : 'box-grid');
   }
   document.getElementById('paso2').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
-/* ---- Bolsa: cantidad ---- */
-function buildBolsaChips(){
-  const el = document.getElementById('bolsa-chips');
+/* ---- Tamaño (bolsa o caja): grilla de opciones con precio fijo ---- */
+function buildTierGrid(containerId, tiersArray){
+  const el = document.getElementById(containerId);
   el.innerHTML = '';
-  [6,12,18,24].forEach(n => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'chip';
-    chip.textContent = n + ' un.';
-    chip.onclick = () => setBolsaQty(n);
-    el.appendChild(chip);
-  });
-  updateBolsaChipsUI();
-}
-function setBolsaQty(n){
-  bolsaQty = Math.max(1, n);
-  document.getElementById('bolsa-qty-val').textContent = bolsaQty;
-  updateBolsaChipsUI();
-  if(mode === 'bolsa'){ target = bolsaQty; resetSelectionAndRender(); }
-}
-function adjustBolsaQty(delta){
-  setBolsaQty(bolsaQty + delta);
-}
-function updateBolsaChipsUI(){
-  document.querySelectorAll('#bolsa-chips .chip').forEach(chip => {
-    const n = parseInt(chip.textContent);
-    chip.classList.toggle('active', n === bolsaQty);
-  });
-}
-
-/* ---- Caja: tamaño ---- */
-function buildBoxGrid(){
-  const el = document.getElementById('box-grid');
-  el.innerHTML = '';
-  if(!cajas.length){
-    el.innerHTML = '<p class="hint">No hay tamaños de caja disponibles en este momento.</p>';
+  if(!tiersArray.length){
+    el.innerHTML = '<p class="hint">No hay tamaños disponibles en este momento.</p>';
     return;
   }
-  cajas.forEach(c => {
+  tiersArray.forEach(t => {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'box-card';
-    card.innerHTML = `<div class="cap">${c.capacidad} un.</div><div class="price">${money(c.precio)}</div>`;
-    card.onclick = () => selectBox(c);
+    card.innerHTML = `<div class="cap">${t.capacidad} un.</div><div class="price">${money(t.precio)}</div>`;
+    card.onclick = () => selectTier(t, containerId);
     el.appendChild(card);
   });
 }
-function selectBox(c){
-  selectedCaja = c;
-  target = c.capacidad;
-  document.querySelectorAll('#box-grid .box-card').forEach((card, i) => {
-    card.classList.toggle('selected', cajas[i] === c);
+
+function selectTier(t, containerId){
+  selectedTier = t;
+  target = t.capacidad;
+  document.querySelectorAll(`#${containerId} .box-card`).forEach(card => {
+    const cap = parseInt(card.querySelector('.cap').textContent);
+    const price = card.querySelector('.price').textContent;
+    card.classList.toggle('selected', cap === t.capacidad && price === money(t.precio));
   });
   document.getElementById('paso3').style.display = 'block';
   resetSelectionAndRender();
@@ -653,7 +616,6 @@ function renderFlavors(){
           <div class="flavor-name">${s.nombre}</div>
           ${s.descripcion ? `<p class="flavor-desc">${s.descripcion}</p>` : ''}
         </div>
-        <div class="flavor-price">${money(s.precio)}</div>
       </div>
       ${soldOut ? '<div class="flavor-stock">Agotado</div>' : (s.stock !== null ? `<div class="flavor-stock">Quedan ${s.stock}</div>` : '')}
       <div class="flavor-bottom">
@@ -696,18 +658,10 @@ function updateProgress(){
    ========================================================= */
 function addToCart(){
   const items = Object.entries(selection).filter(([,q]) => q > 0)
-    .map(([nombre, qty]) => {
-      const s = sabores.find(x => x.nombre === nombre);
-      return { nombre, qty, precio: s.precio };
-    });
-  if(!items.length) return;
+    .map(([nombre, qty]) => ({ nombre, qty }));
+  if(!items.length || !selectedTier) return;
 
-  if(mode === 'bolsa'){
-    const subtotal = items.reduce((a,it) => a + it.qty*it.precio, 0);
-    cart.push({ tipo: 'bolsa', unidades: target, items, subtotal });
-  } else {
-    cart.push({ tipo: 'caja', unidades: target, items, subtotal: selectedCaja.precio });
-  }
+  cart.push({ tipo: mode, unidades: target, items, subtotal: selectedTier.precio });
 
   renderCart();
   resetSelectionAndRender();
